@@ -35,9 +35,6 @@ CORS(app)
 # ═══════════════════════════════════════════════════════════════════
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PLANTILLAS_DIR = os.path.join(_BASE_DIR, "Aplicación Membrantec")
-if not os.path.isdir(PLANTILLAS_DIR):
-    PLANTILLAS_DIR = _BASE_DIR
 
 PLANTILLAS = {
     "pi":  "GM-PI-HDPE-INF-RAI-001.xlsx",
@@ -46,6 +43,31 @@ PLANTILLAS = {
     "rep": "GM-REP-HDPE-SUP-RAI-001_1.xlsx",
     "ri":  "GM-RI-HDPE-SUP-RAI-001.xlsx",
 }
+
+# Busca automáticamente dónde están las plantillas: raíz o cualquier subcarpeta.
+def _encontrar_plantillas_dir():
+    test_file = PLANTILLAS["pi"]
+    # 1. Probar raíz
+    if os.path.isfile(os.path.join(_BASE_DIR, test_file)):
+        return _BASE_DIR
+    # 2. Probar candidatos típicos
+    for nombre in ["Aplicación Membrantec", "Aplicacion Membrantec",
+                   "App Membrantec", "plantillas", "templates"]:
+        d = os.path.join(_BASE_DIR, nombre)
+        if os.path.isfile(os.path.join(d, test_file)):
+            return d
+    # 3. Buscar recursivamente en todas las subcarpetas (1 nivel)
+    try:
+        for sub in os.listdir(_BASE_DIR):
+            d = os.path.join(_BASE_DIR, sub)
+            if os.path.isdir(d) and os.path.isfile(os.path.join(d, test_file)):
+                return d
+    except Exception:
+        pass
+    return _BASE_DIR  # fallback
+
+PLANTILLAS_DIR = _encontrar_plantillas_dir()
+print(f"[membrantec] Plantillas en: {PLANTILLAS_DIR}")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -450,100 +472,4 @@ def generar_ri(patch, proyecto, registros):
         patch.set(f"D{fila}", r.get("hora"))
         clima = (r.get("clima") or "").lower()
         patch.set(f"E{fila}", "x" if "nublado" in clima else "-")
-        patch.set(f"F{fila}", "x" if ("viento" in clima and "c/" in clima) else "-")
-        patch.set(f"G{fila}", "x" if ("despejado" in clima or "s/viento" in clima) else "-")
-        patch.set(f"I{fila}", r.get("panel"))
-        patch.set(f"K{fila}", r.get("rollo"))
-        patch.set(f"M{fila}", r.get("m2_rollo"))
-        patch.set(f"P{fila}", r.get("espesor"))
-        patch.set(f"Q{fila}", r.get("st_largo"))
-        patch.set(f"R{fila}", r.get("st_ancho"))
-        patch.set(f"S{fila}", r.get("st_m2"))
-        patch.set(f"U{fila}", r.get("ct_largo"))
-        patch.set(f"V{fila}", r.get("ct_ancho"))
-        patch.set(f"W{fila}", r.get("ct_m2"))
-        patch.set(f"Z{fila}", r.get("obs") or "-")
-        fila += 1
-
-
-GENERADORES = {
-    "pi":  generar_pi,
-    "pd":  generar_pd,
-    "ru":  generar_ru,
-    "rep": generar_rep,
-    "ri":  generar_ri,
-}
-
-
-# ENDPOINTS HTTP
-
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({
-        "service": "Membrantec - Generador de Protocolos",
-        "endpoints": {
-            "POST /generar-protocolo": "Body: {tipo, proyecto, registros, manometro?, equipo?}",
-            "GET /health": "Healthcheck",
-        },
-        "tipos": list(PLANTILLAS.keys()),
-    })
-
-
-@app.route("/health", methods=["GET"])
-def health():
-    ok = {k: os.path.isfile(os.path.join(PLANTILLAS_DIR, v)) for k, v in PLANTILLAS.items()}
-    return jsonify({"ok": all(ok.values()), "plantillas": ok, "dir": PLANTILLAS_DIR})
-
-
-@app.route("/generar-protocolo", methods=["POST"])
-def generar_protocolo():
-    try:
-        datos = request.get_json(force=True)
-        tipo = (datos.get("tipo") or "").lower()
-        if tipo not in PLANTILLAS:
-            return jsonify({"error": "tipo invalido", "opciones": list(PLANTILLAS.keys())}), 400
-
-        ruta = os.path.join(PLANTILLAS_DIR, PLANTILLAS[tipo])
-        if not os.path.isfile(ruta):
-            return jsonify({"error": "plantilla no encontrada", "ruta": ruta}), 500
-
-        proyecto  = datos.get("proyecto")  or {}
-        registros = datos.get("registros") or []
-        manometro = datos.get("manometro") or {}
-        equipo    = datos.get("equipo")    or {}
-
-        patch = XlsxPatcher(ruta)
-        fn = GENERADORES[tipo]
-        if tipo == "ru":
-            fn(patch, proyecto, registros, manometro=manometro)
-        elif tipo == "rep":
-            fn(patch, proyecto, registros, equipo=equipo)
-        else:
-            fn(patch, proyecto, registros)
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tf:
-            tmp_path = tf.name
-        try:
-            patch.save(tmp_path)
-            with open(tmp_path, "rb") as f:
-                output = BytesIO(f.read())
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        output.seek(0)
-
-        nombre = (proyecto.get("protocolo") or tipo.upper()) + ".xlsx"
-        return send_file(
-            output,
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            as_attachment=True,
-            download_name=nombre,
-        )
-    except Exception as e:
-        import traceback
-        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+        pat
