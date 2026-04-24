@@ -1,4 +1,5 @@
 from flask import Flask, request, send_file, jsonify
+from openpyxl.drawing.image import Image as XLImage
 from flask_cors import CORS
 import openpyxl
 from io import BytesIO
@@ -7,6 +8,20 @@ from datetime import datetime, time as dtime
 
 app = Flask(__name__)
 CORS(app)
+
+
+LOGO_PATH = os.path.join(os.path.dirname(__file__), 'plantillas', 'logo_membrantec.png')
+
+def insertar_logo(ws, col, row):
+    try:
+        if os.path.exists(LOGO_PATH):
+            logo = XLImage(LOGO_PATH)
+            logo.width = 160
+            logo.height = 46
+            cell = ws.cell(row=row, column=col)
+            ws.add_image(logo, cell.coordinate)
+    except Exception as e:
+        print(f'[logo] Error: {e}')
 
 PLANTILLAS = os.path.join(os.path.dirname(__file__), 'plantillas')
 print(f'[membrantec] Plantillas en: {PLANTILLAS}')
@@ -58,6 +73,7 @@ def generar_protocolo():
         wb = openpyxl.load_workbook(ruta)
         ws = wb.active
         proto = proy.get('protocolo', tipo.upper())
+        insertar_logo(ws, 1, 1)
 
         if tipo == 'pi':
             ws['F4']  = f"Contrato : {proy.get('contrato','')}"
