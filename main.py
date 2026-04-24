@@ -1,475 +1,299 @@
-"""
-Servidor Flask para generar protocolos de calidad Membrantec Chile.
-
-Rellena las plantillas XLSX oficiales modificando SOLO el XML de la hoja
-(sheet1.xml) dentro del ZIP del XLSX. Esto preserva al 100%:
-  - Logos (PNG y EMF/WMF)
-  - Bordes, fuentes, colores
-  - Celdas fusionadas
-  - Firmas, encabezados, pies de página
-  - Todo el formato original
-
-Plantillas esperadas (junto al script, o en subcarpeta "Aplicación Membrantec"):
-  - GM-PI-HDPE-INF-RAI-001.xlsx    (Pruebas Iniciales)
-  - GM-PD-HDPE-INF-RAI-001.xlsx    (Pruebas Destructivas)
-  - GM-RU-HDPE-INF-RAI-001.xlsx    (Uniones y Prueba de Aire)
-  - GM-REP-HDPE-SUP-RAI-001_1.xlsx (Reparaciones y Vacío)
-  - GM-RI-HDPE-SUP-RAI-001.xlsx    (Instalación)
-"""
-import os
-import re
-import shutil
-import tempfile
-import zipfile
-from io import BytesIO
-from xml.etree import ElementTree as ET
-
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
+import openpyxl
+from io import BytesIO
+import os
+from datetime import datetime, time as dtime
 
 app = Flask(__name__)
 CORS(app)
 
-# ═══════════════════════════════════════════════════════════════════
-# CONFIG DE PLANTILLAS
-# ═══════════════════════════════════════════════════════════════════
+PLANTILLAS = os.path.join(os.path.dirname(__file__), 'Aplicación Membrantec')
+print(f'[membrantec] Plantillas en: {PLANTILLAS}')
 
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-PLANTILLAS = {
-    "pi":  "GM-PI-HDPE-INF-RAI-001.xlsx",
-    "pd":  "GM-PD-HDPE-INF-RAI-001.xlsx",
-    "ru":  "GM-RU-HDPE-INF-RAI-001.xlsx",
-    "rep": "GM-REP-HDPE-SUP-RAI-001_1.xlsx",
-    "ri":  "GM-RI-HDPE-SUP-RAI-001.xlsx",
+ARCHIVOS = {
+    'pi':  'GM-PI-HDPE-INF-RAI-001.xlsx',
+    'pd':  'GM-PD-HDPE-INF-RAI-001.xlsx',
+    'ru':  'GM-RU-HDPE-INF-RAI-001.xlsx',
+    'rep': 'GM-REP-HDPE-SUP-RAI-001_1.xlsx',
+    'ri':  'GM-RI-HDPE-SUP-RAI-001.xlsx',
 }
 
-# Busca automáticamente dónde están las plantillas: raíz o cualquier subcarpeta.
-def _encontrar_plantillas_dir():
-    test_file = PLANTILLAS["pi"]
-    # 1. Probar raíz
-    if os.path.isfile(os.path.join(_BASE_DIR, test_file)):
-        return _BASE_DIR
-    # 2. Probar candidatos típicos
-    for nombre in ["Aplicación Membrantec", "Aplicacion Membrantec",
-                   "App Membrantec", "plantillas", "templates"]:
-        d = os.path.join(_BASE_DIR, nombre)
-        if os.path.isfile(os.path.join(d, test_file)):
-            return d
-    # 3. Buscar recursivamente en todas las subcarpetas (1 nivel)
+def to_date(val):
+    if not val: return None
+    try: return datetime.strptime(str(val)[:10], '%Y-%m-%d')
+    except: return val
+
+def to_time(val):
+    if not val: return None
     try:
-        for sub in os.listdir(_BASE_DIR):
-            d = os.path.join(_BASE_DIR, sub)
-            if os.path.isdir(d) and os.path.isfile(os.path.join(d, test_file)):
-                return d
-    except Exception:
-        pass
-    return _BASE_DIR  # fallback
+        partes = str(val).replace('.', ':').split(':')
+        return dtime(int(partes[0]), int(partes[1]))
+    except: return val
 
-PLANTILLAS_DIR = _encontrar_plantillas_dir()
-print(f"[membrantec] Plantillas en: {PLANTILLAS_DIR}")
+@app.route('/')
+def index():
+    return jsonify({'status': 'GEOMEMB API OK'})
 
+@app.route('/generar-protocolo', methods=['POST', 'OPTIONS'])
+def generar_protocolo():
+    if request.method == 'OPTIONS':
+        return '', 204
 
-# ═══════════════════════════════════════════════════════════════════
-# MOTOR DE PARCHE XLSX  (modifica sheet1.xml dentro del ZIP)
-# ═══════════════════════════════════════════════════════════════════
+    try:
+        d = request.json
+        tipo = d.get('tipo', '').lower()
+        proy = d.get('proyecto', {})
+        registros = d.get('registros', [])
+        manometro = d.get('manometro', {})
+        equipo = d.get('equipo', {})
 
-NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
-ET.register_namespace('', NS)
+        if tipo not in ARCHIVOS:
+            return jsonify({'error': f'Tipo desconocido: {tipo}'}), 400
 
+        ruta = os.path.join(PLANTILLAS, ARCHIVOS[tipo])
+        if not os.path.exists(ruta):
+            return jsonify({'error': f'Plantilla no encontrada: {ruta}'}), 500
 
-def _col_to_num(col):
-    n = 0
-    for ch in col:
-        n = n * 26 + (ord(ch) - ord('A') + 1)
-    return n
+        wb = openpyxl.load_workbook(ruta)
+        ws = wb.active
+        proto = proy.get('protocolo', tipo.upper())
 
+        if tipo == 'pi':
+            ws['F4']  = f"Contrato : {proy.get('contrato','')}"
+            ws['F5']  = f"Proyecto: \"{proy.get('proyecto','')}\""
+            ws['D7']  = proy.get('area_cod','')
+            ws['J7']  = proy.get('plano','')
+            ws['S7']  = proto
+            ws['AB7'] = to_date(proy.get('fecha',''))
+            ws['A9']  = proy.get('tag','')
+            ws['C10'] = proy.get('area_cod','')
+            ws['E10'] = proy.get('area_desc','')
+            ws['H10'] = proy.get('sis_cod','')
+            ws['K10'] = proy.get('sis_desc','')
+            ws['M10'] = proy.get('sub_cod','')
+            ws['P10'] = proy.get('sub_desc','')
+            ws['S10'] = proy.get('aconex','')
+            ws['Y10'] = proy.get('pie','')
+            ws['C25'] = proy.get('min_des', 121)
+            ws['E25'] = proy.get('min_cor', 160)
+            ws['C28'] = proy.get('tens_eq', 'TS-25')
+            ws['C29'] = proy.get('tens_cert', 'MAM-3494')
+            fila = 36
+            for r in registros:
+                ws[f'A{fila}'] = to_date(r.get('fecha',''))
+                ws[f'C{fila}'] = to_time(r.get('hora',''))
+                ws[f'D{fila}'] = r.get('operador','')
+                ws[f'E{fila}'] = r.get('tamb','')
+                ws[f'F{fila}'] = r.get('maq','')
+                ws[f'H{fila}'] = r.get('tmaq','')
+                ws[f'J{fila}'] = r.get('tleister','-')
+                ws[f'K{fila}'] = r.get('veloc','')
+                ws[f'L{fila}'] = r.get('inspector','')
+                ws[f'N{fila}'] = r.get('d1a',''); ws[f'O{fila}'] = r.get('d1b','')
+                ws[f'P{fila}'] = r.get('d2a',''); ws[f'Q{fila}'] = r.get('d2b','')
+                ws[f'R{fila}'] = r.get('d3a',''); ws[f'S{fila}'] = r.get('d3b','')
+                ws[f'T{fila}'] = r.get('d4a',''); ws[f'U{fila}'] = r.get('d4b','')
+                ws[f'V{fila}'] = r.get('d5a',''); ws[f'W{fila}'] = r.get('d5b','')
+                ws[f'X{fila}'] = r.get('c1',''); ws[f'Y{fila}'] = r.get('c2','')
+                ws[f'Z{fila}'] = r.get('c3',''); ws[f'AA{fila}'] = r.get('c4','')
+                ws[f'AB{fila}'] = r.get('c5','')
+                ws[f'AC{fila}'] = r.get('resultado','')
+                ws[f'AD{fila}'] = r.get('falla_prob','-')
+                ws[f'AE{fila}'] = r.get('falla_tipo','-')
+                fila += 1
 
-def _parse_coord(coord):
-    m = re.match(r'([A-Z]+)(\d+)', coord)
-    return _col_to_num(m.group(1)), int(m.group(2))
+        elif tipo == 'pd':
+            ws['E4']  = f"Contrato : {proy.get('contrato','')}"
+            ws['E5']  = f"Proyecto: \"{proy.get('proyecto','')}\""
+            ws['D7']  = proy.get('area_cod','')
+            ws['J7']  = proy.get('plano','')
+            ws['S7']  = proto
+            ws['AB7'] = to_date(proy.get('fecha',''))
+            ws['A10'] = proy.get('tag','')
+            ws['D10'] = proy.get('area_cod','')
+            ws['F10'] = proy.get('area_desc','')
+            ws['I10'] = proy.get('sis_cod','')
+            ws['L10'] = proy.get('sis_desc','')
+            ws['P10'] = proy.get('sub_cod','')
+            ws['S10'] = proy.get('sub_desc','')
+            ws['V10'] = proy.get('aconex','')
+            ws['AB10'] = proy.get('pie','')
+            ws['C25'] = proy.get('min_des', 121)
+            ws['E25'] = proy.get('min_cor', 160)
+            ws['D27'] = proy.get('tens_eq', 'TS-25')
+            ws['J27'] = proy.get('tens_cert', 'MAM-3494')
+            fila = 35
+            for i, r in enumerate(registros):
+                ws[f'A{fila}'] = to_date(r.get('fecha',''))
+                ws[f'B{fila}'] = i + 1
+                ws[f'C{fila}'] = r.get('union','')
+                ws[f'D{fila}'] = r.get('ubicacion','')
+                ws[f'E{fila}'] = r.get('hora','')
+                ws[f'F{fila}'] = r.get('tamb','')
+                ws[f'G{fila}'] = r.get('operador','')
+                ws[f'H{fila}'] = r.get('maq','')
+                ws[f'I{fila}'] = r.get('tmaq','')
+                ws[f'J{fila}'] = r.get('tleister','-')
+                ws[f'K{fila}'] = r.get('veloc','')
+                ws[f'L{fila}'] = r.get('inspector','')
+                ws[f'N{fila}'] = r.get('d1a',''); ws[f'O{fila}'] = r.get('d1b','')
+                ws[f'P{fila}'] = r.get('d2a',''); ws[f'Q{fila}'] = r.get('d2b','')
+                ws[f'R{fila}'] = r.get('d3a',''); ws[f'S{fila}'] = r.get('d3b','')
+                ws[f'T{fila}'] = r.get('d4a',''); ws[f'U{fila}'] = r.get('d4b','')
+                ws[f'V{fila}'] = r.get('d5a',''); ws[f'W{fila}'] = r.get('d5b','')
+                ws[f'X{fila}'] = r.get('c1',''); ws[f'Y{fila}'] = r.get('c2','')
+                ws[f'Z{fila}'] = r.get('c3',''); ws[f'AA{fila}'] = r.get('c4','')
+                ws[f'AB{fila}'] = r.get('c5','')
+                ws[f'AC{fila}'] = r.get('resultado','')
+                ws[f'AD{fila}'] = r.get('falla_prob','-')
+                ws[f'AE{fila}'] = r.get('falla_tipo','-')
+                fila += 1
 
+        elif tipo == 'ru':
+            ws['E3']  = f"Contrato : {proy.get('contrato','')}"
+            ws['E4']  = f"Proyecto: \"{proy.get('proyecto','')}\""
+            ws['D6']  = proy.get('area_cod','')
+            ws['H6']  = proy.get('plano','')
+            ws['P6']  = proto
+            ws['V6']  = to_date(proy.get('fecha',''))
+            ws['B8']  = proy.get('tag','')
+            ws['D9']  = proy.get('area_cod','')
+            ws['E9']  = proy.get('area_desc','')
+            ws['H9']  = proy.get('sis_cod','')
+            ws['K9']  = proy.get('sis_desc','')
+            ws['O9']  = proy.get('sub_cod','')
+            ws['Q9']  = proy.get('sub_desc','')
+            ws['S9']  = proy.get('aconex','')
+            ws['U9']  = proy.get('pie','')
+            ws['E12'] = proy.get('lugar','')
+            ws['N39'] = manometro.get('serie','')
+            ws['Q39'] = to_date(manometro.get('fecha_cal',''))
+            ws['T39'] = manometro.get('certificado','')
+            ws['V39'] = manometro.get('etiqueta','')
+            fila = 26
+            for r in registros:
+                ws[f'B{fila}'] = r.get('union','')
+                ws[f'C{fila}'] = r.get('distancia','')
+                ws[f'D{fila}'] = to_date(r.get('fecha',''))
+                ws[f'E{fila}'] = r.get('operador','')
+                ws[f'F{fila}'] = r.get('maq','')
+                ws[f'G{fila}'] = r.get('tmaq','')
+                ws[f'H{fila}'] = r.get('veloc','')
+                ws[f'I{fila}'] = to_time(r.get('hora_union',''))
+                ws[f'J{fila}'] = 'X'
+                ws[f'K{fila}'] = '-'
+                ws[f'L{fila}'] = r.get('ds', 0)
+                ws[f'N{fila}'] = to_time(r.get('hora_ini',''))
+                ws[f'O{fila}'] = r.get('psi_ini','')
+                ws[f'P{fila}'] = to_time(r.get('hora_fin',''))
+                ws[f'Q{fila}'] = r.get('psi_fin','')
+                ws[f'R{fila}'] = r.get('psi_dif','')
+                ws[f'S{fila}'] = r.get('resultado','')
+                ws[f'T{fila}'] = r.get('tec','')
+                ws[f'U{fila}'] = to_date(r.get('fecha_prueba',''))
+                ws[f'V{fila}'] = r.get('tipo_falla','-')
+                ws[f'W{fila}'] = r.get('mano_etiq','')
+                fila += 1
 
-def _parsear_merges(root):
-    merges = []
-    mc = root.find(f'{{{NS}}}mergeCells')
-    if mc is None:
-        return merges
-    for m in mc.findall(f'{{{NS}}}mergeCell'):
-        ref = m.get('ref')
-        a, b = ref.split(':')
-        ac, ar = _parse_coord(a)
-        bc, br = _parse_coord(b)
-        merges.append((ac, ar, bc, br, a))
-    return merges
+        elif tipo == 'rep':
+            ws['G3']  = f"Contrato : {proy.get('contrato','')}"
+            ws['G4']  = f"Proyecto: \"{proy.get('proyecto','')}\""
+            ws['D6']  = proy.get('area_cod','')
+            ws['I6']  = proy.get('plano','')
+            ws['Q6']  = proto
+            ws['X6']  = to_date(proy.get('fecha',''))
+            ws['B9']  = proy.get('tag','')
+            ws['D9']  = proy.get('area_cod','')
+            ws['E9']  = proy.get('area_desc','')
+            ws['G9']  = proy.get('sis_cod','')
+            ws['H9']  = proy.get('sis_desc','')
+            ws['J9']  = proy.get('sub_cod','')
+            ws['L9']  = proy.get('sub_desc','')
+            ws['N9']  = proy.get('aconex','')
+            ws['U9']  = proy.get('pie','')
+            ws['E11'] = proy.get('lugar','')
+            ws['G18'] = equipo.get('nombre','VAC-26')
+            ws['J18'] = to_date(equipo.get('fecha_cal',''))
+            ws['L18'] = equipo.get('certificado','')
+            fila = 27
+            for r in registros:
+                ws[f'B{fila}'] = to_date(r.get('fecha',''))
+                ws[f'C{fila}'] = to_time(r.get('hora',''))
+                ws[f'D{fila}'] = r.get('n_parche','')
+                ws[f'E{fila}'] = r.get('tipo_rep','')
+                ws[f'F{fila}'] = r.get('union','')
+                ws[f'H{fila}'] = r.get('tecnico','')
+                ws[f'J{fila}'] = r.get('dim_largo','')
+                ws[f'K{fila}'] = r.get('dim_ancho','')
+                ws[f'L{fila}'] = r.get('maq','')
+                ws[f'M{fila}'] = r.get('tmaq','')
+                ws[f'N{fila}'] = r.get('tleister','')
+                ws[f'O{fila}'] = r.get('ds','-')
+                ws[f'Q{fila}'] = r.get('prueba','VA')
+                ws[f'S{fila}'] = '✓' if r.get('resultado') == 'Aprobado' else '✗'
+                ws[f'U{fila}'] = r.get('tipo_falla1','-')
+                ws[f'V{fila}'] = r.get('equipo','')
+                ws[f'W{fila}'] = to_time(r.get('hora_fin',''))
+                ws[f'X{fila}'] = to_date(r.get('fecha_fin',''))
+                ws[f'Y{fila}'] = r.get('op_fin','')
+                fila += 1
 
+        elif tipo == 'ri':
+            ws['G4']  = f"Contrato : {proy.get('contrato','')}"
+            ws['G5']  = f"Proyecto: \"{proy.get('proyecto','')}\""
+            ws['E7']  = proy.get('area_cod','')
+            ws['M7']  = proy.get('plano','')
+            ws['U7']  = proto
+            ws['AB7'] = to_date(proy.get('fecha',''))
+            ws['B9']  = proy.get('tag','')
+            ws['E10'] = proy.get('area_cod','')
+            ws['I10'] = proy.get('area_desc','')
+            ws['L10'] = proy.get('sis_cod','')
+            ws['O10'] = proy.get('sis_desc','')
+            ws['R10'] = proy.get('sub_cod','')
+            ws['T10'] = proy.get('sub_desc','')
+            ws['V10'] = proy.get('aconex','')
+            ws['AB10'] = proy.get('pie','')
+            ws['F13'] = proy.get('lugar','')
+            fila = 22
+            for r in registros:
+                clima = r.get('clima','')
+                ws[f'B{fila}'] = to_date(r.get('fecha',''))
+                ws[f'D{fila}'] = to_time(r.get('hora',''))
+                ws[f'E{fila}'] = 'x' if clima == 'Nublado' else '-'
+                ws[f'F{fila}'] = 'x' if clima == 'Despejado c/viento' else '-'
+                ws[f'G{fila}'] = 'x' if clima == 'Despejado s/viento' else '-'
+                ws[f'I{fila}'] = r.get('panel','')
+                ws[f'K{fila}'] = r.get('rollo','')
+                ws[f'M{fila}'] = r.get('m2_rollo','')
+                ws[f'P{fila}'] = r.get('espesor','2.00')
+                ws[f'Q{fila}'] = r.get('st_largo','')
+                ws[f'R{fila}'] = r.get('st_ancho','')
+                ws[f'S{fila}'] = r.get('st_m2','')
+                ws[f'U{fila}'] = r.get('ct_largo','')
+                ws[f'V{fila}'] = r.get('ct_ancho','')
+                ws[f'W{fila}'] = r.get('ct_m2','')
+                ws[f'Z{fila}'] = r.get('obs','')
+                fila += 1
+            ws['K37'] = sum(float(r.get('m2_rollo', 0) or 0) for r in registros)
+            ws['Q37'] = sum(float(r.get('st_m2', 0) or 0) for r in registros)
+            ws['U37'] = sum(float(r.get('ct_m2', 0) or 0) for r in registros)
 
-def _top_left_de_merge(coord, merges):
-    cc, cr = _parse_coord(coord)
-    for ac, ar, bc, br, top in merges:
-        if ac <= cc <= bc and ar <= cr <= br:
-            return top
-    return None
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=f'{proto}.xlsx'
+        )
 
-
-def _escribir_valor(cell_el, value):
-    """Escribe el valor dentro de un elemento <c>."""
-    # Limpiar hijos y atributo 't' previos
-    for child in list(cell_el):
-        cell_el.remove(child)
-    if 't' in cell_el.attrib:
-        del cell_el.attrib['t']
-
-    if isinstance(value, bool):
-        value = str(value)
-    if isinstance(value, (int, float)):
-        cell_el.set('t', 'n')
-        v = ET.SubElement(cell_el, f'{{{NS}}}v')
-        v.text = str(value)
-    else:
-        # Usamos inlineStr para no tocar sharedStrings (más robusto)
-        cell_el.set('t', 'inlineStr')
-        is_el = ET.SubElement(cell_el, f'{{{NS}}}is')
-        t_el = ET.SubElement(is_el, f'{{{NS}}}t')
-        t_el.text = str(value)
-        t_el.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
-
-
-class XlsxPatcher:
-    """Aplica un conjunto de parches {coord: valor} a un XLSX preservando todo."""
-
-    def __init__(self, src_path, sheet_xml_path='xl/worksheets/sheet1.xml'):
-        self.src_path = src_path
-        self.sheet_xml_path = sheet_xml_path
-        self._patches = {}
-
-    def set(self, coord, value):
-        """Agenda un valor para una celda. Respeta merges automáticamente."""
-        if value is None or value == "":
-            return
-        self._patches[coord] = value
-
-    def set_map(self, mapa, fuente):
-        """Escribe múltiples celdas a partir de un dict campo→coord y otro campo→valor."""
-        for campo, coord in mapa.items():
-            val = fuente.get(campo, "")
-            self.set(coord, val)
-
-    def save(self, dst_path):
-        """Aplica los parches y escribe el XLSX resultante."""
-        # 1) Copia el original a destino
-        shutil.copy(self.src_path, dst_path)
-
-        # 2) Leer sheet1.xml
-        with zipfile.ZipFile(dst_path, 'r') as z:
-            sheet_xml = z.read(self.sheet_xml_path).decode('utf-8')
-
-        root = ET.fromstring(sheet_xml)
-        sheetData = root.find(f'{{{NS}}}sheetData')
-        merges = _parsear_merges(root)
-
-        # Index rows
-        rows_by_num = {}
-        for row_el in sheetData.findall(f'{{{NS}}}row'):
-            rows_by_num[int(row_el.get('r'))] = row_el
-
-        # 3) Aplicar parches (redirigiendo merges al top-left)
-        for coord, value in self._patches.items():
-            top = _top_left_de_merge(coord, merges)
-            if top:
-                coord = top
-            m = re.match(r'([A-Z]+)(\d+)', coord)
-            rownum = int(m.group(2))
-
-            row_el = rows_by_num.get(rownum)
-            if row_el is None:
-                row_el = ET.SubElement(sheetData, f'{{{NS}}}row')
-                row_el.set('r', str(rownum))
-                rows_by_num[rownum] = row_el
-
-            cell_el = None
-            for c in row_el.findall(f'{{{NS}}}c'):
-                if c.get('r') == coord:
-                    cell_el = c
-                    break
-            if cell_el is None:
-                cell_el = ET.SubElement(row_el, f'{{{NS}}}c')
-                cell_el.set('r', coord)
-
-            _escribir_valor(cell_el, value)
-
-        # 4) Reescribir el ZIP preservando todos los demás archivos
-        new_xml = ET.tostring(root, encoding='utf-8', xml_declaration=True)
-        tmp = dst_path + '.tmp'
-        with zipfile.ZipFile(dst_path, 'r') as zin:
-            with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as zout:
-                for item in zin.infolist():
-                    data = new_xml if item.filename == self.sheet_xml_path else zin.read(item.filename)
-                    zout.writestr(item, data)
-        os.replace(tmp, dst_path)
-
-
-# ═══════════════════════════════════════════════════════════════════
-# GENERADORES POR TIPO DE PROTOCOLO
-# ═══════════════════════════════════════════════════════════════════
-
-def _cabecera(p, mapa):
-    """Devuelve un dict listo para patch.set_map aplicando mapa a proyecto p."""
-    return mapa
-
-
-def generar_pi(patch, proyecto, registros):
-    """Pruebas Iniciales. Tabla en filas 36+."""
-    patch.set_map({
-        "contrato":   "F4",
-        "proyecto":   "F5",
-        "area_cod":   "D7",
-        "plano":      "J7",
-        "protocolo":  "S7",
-        "fecha":      "AB7",
-        "tag":        "A9",
-        "area_cod2":  "C10",
-        "area_desc":  "E10",
-        "sis_cod":    "H10",
-        "sis_desc":   "K10",
-        "sub_cod":    "M10",
-        "sub_desc":   "P10",
-        "pie":        "S10",
-        "aconex":     "Y10",
-        "lugar":      "F12",
-        "espesor":    "B17",
-        "min_des":    "C25",
-        "min_cor":    "E25",
-        "tens_eq":    "C28",
-        "tens_cert":  "C29",
-    }, proyecto)
-
-    tipo = (proyecto.get("tipo_prueba") or "fusion").lower()
-    if tipo.startswith("fus"):
-        patch.set("F22", "X"); patch.set("F23", "-")
-    else:
-        patch.set("F22", "-"); patch.set("F23", "X")
-
-    fila = 36
-    for r in registros:
-        patch.set(f"A{fila}",  r.get("fecha"))
-        patch.set(f"C{fila}",  r.get("hora"))
-        patch.set(f"D{fila}",  r.get("operador"))
-        patch.set(f"E{fila}",  r.get("tamb"))
-        patch.set(f"F{fila}",  r.get("maq"))
-        patch.set(f"H{fila}",  r.get("tmaq"))
-        patch.set(f"J{fila}",  r.get("tleister") or "-")
-        patch.set(f"K{fila}",  r.get("veloc"))
-        patch.set(f"L{fila}",  r.get("inspector"))
-        for letra, key in zip(["N","O","P","Q","R","S","T","U","V","W"],
-                              ["d1a","d1b","d2a","d2b","d3a","d3b","d4a","d4b","d5a","d5b"]):
-            patch.set(f"{letra}{fila}", r.get(key))
-        for letra, key in zip(["X","Y","Z","AA","AB"], ["c1","c2","c3","c4","c5"]):
-            patch.set(f"{letra}{fila}", r.get(key))
-        patch.set(f"AC{fila}", r.get("resultado") or "Aprobado")
-        patch.set(f"AD{fila}", r.get("falla_prob") or "-")
-        patch.set(f"AE{fila}", r.get("falla_tipo") or "-")
-        fila += 1
-
-
-def generar_pd(patch, proyecto, registros):
-    """Pruebas Destructivas. Tabla en filas 35+."""
-    patch.set_map({
-        "contrato":  "E4",
-        "proyecto":  "E5",
-        "area_cod":  "D7",
-        "plano":     "J7",
-        "protocolo": "S7",
-        "fecha":     "AB7",
-        "tag":       "A10",
-        "area_cod2": "D10",
-        "area_desc": "F10",
-        "sis_cod":   "I10",
-        "sis_desc":  "L10",
-        "sub_cod":   "P10",
-        "sub_desc":  "S10",
-        "pie":       "V10",
-        "aconex":    "AB10",
-        "lugar":     "F12",
-        "min_des":   "C25",
-        "min_cor":   "E25",
-        "tens_eq":   "D27",
-        "tens_cert": "J27",
-    }, proyecto)
-
-    tipo = (proyecto.get("tipo_prueba") or "fusion").lower()
-    if tipo.startswith("fus"):
-        patch.set("F22", "X"); patch.set("F23", "-")
-    else:
-        patch.set("F22", "-"); patch.set("F23", "X")
-
-    fila = 35
-    for i, r in enumerate(registros, 1):
-        patch.set(f"A{fila}",  r.get("fecha"))
-        patch.set(f"B{fila}",  i)
-        patch.set(f"C{fila}",  r.get("union"))
-        patch.set(f"D{fila}",  r.get("ubicacion"))
-        patch.set(f"E{fila}",  r.get("hora"))
-        patch.set(f"F{fila}",  r.get("tamb"))
-        patch.set(f"G{fila}",  r.get("operador"))
-        patch.set(f"H{fila}",  r.get("maq"))
-        patch.set(f"I{fila}",  r.get("tmaq"))
-        patch.set(f"J{fila}",  r.get("tleister") or "-")
-        patch.set(f"K{fila}",  r.get("veloc"))
-        patch.set(f"L{fila}",  r.get("inspector"))
-        for letra, key in zip(["N","O","P","Q","R","S","T","U","V","W"],
-                              ["d1a","d1b","d2a","d2b","d3a","d3b","d4a","d4b","d5a","d5b"]):
-            patch.set(f"{letra}{fila}", r.get(key))
-        for letra, key in zip(["X","Y","Z","AA","AB"], ["c1","c2","c3","c4","c5"]):
-            patch.set(f"{letra}{fila}", r.get(key))
-        patch.set(f"AC{fila}", r.get("resultado") or "Aprobado")
-        patch.set(f"AD{fila}", r.get("falla_prob") or "-")
-        patch.set(f"AE{fila}", r.get("falla_tipo") or "-")
-        fila += 1
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
-def generar_ru(patch, proyecto, registros, manometro=None):
-    """Uniones y Prueba de Aire. Tabla en filas 26+."""
-    patch.set_map({
-        "contrato":  "E3",
-        "proyecto":  "E4",
-        "area_cod":  "D6",
-        "plano":     "H6",
-        "protocolo": "P6",
-        "fecha":     "V6",
-        "tag":       "B8",
-        "area_cod2": "D9",
-        "area_desc": "E9",
-        "sis_cod":   "H9",
-        "sis_desc":  "K9",
-        "sub_cod":   "O9",
-        "sub_desc":  "Q9",
-        "pie":       "S9",
-        "aconex":    "U9",
-        "lugar":     "E12",
-        "espesor":   "C15",
-    }, proyecto)
-
-    fila = 26
-    for r in registros:
-        patch.set(f"B{fila}", r.get("union"))
-        patch.set(f"C{fila}", r.get("distancia"))
-        patch.set(f"D{fila}", r.get("fecha"))
-        patch.set(f"E{fila}", r.get("operador"))
-        patch.set(f"F{fila}", r.get("maq"))
-        patch.set(f"G{fila}", r.get("tmaq"))
-        patch.set(f"H{fila}", r.get("veloc"))
-        patch.set(f"I{fila}", r.get("hora_union"))
-        linea = (r.get("linea") or "SI").upper()
-        if linea == "SI":
-            patch.set(f"J{fila}", "X"); patch.set(f"K{fila}", "-")
-        else:
-            patch.set(f"J{fila}", "-"); patch.set(f"K{fila}", "X")
-        patch.set(f"L{fila}", r.get("ds"))
-        patch.set(f"N{fila}", r.get("hora_ini"))
-        patch.set(f"O{fila}", r.get("psi_ini"))
-        patch.set(f"P{fila}", r.get("hora_fin"))
-        patch.set(f"Q{fila}", r.get("psi_fin"))
-        patch.set(f"R{fila}", r.get("psi_dif"))
-        patch.set(f"S{fila}", r.get("resultado") or "Aprobado")
-        patch.set(f"T{fila}", r.get("tec"))
-        patch.set(f"U{fila}", r.get("fecha_prueba"))
-        patch.set(f"V{fila}", r.get("tipo_falla") or "-")
-        patch.set(f"W{fila}", r.get("mano_etiq"))
-        fila += 1
-
-    if manometro:
-        patch.set("N39", manometro.get("serie"))
-        patch.set("Q39", manometro.get("fecha_cal"))
-        patch.set("T39", manometro.get("certificado"))
-        patch.set("V39", manometro.get("etiqueta"))
-
-
-def generar_rep(patch, proyecto, registros, equipo=None):
-    """Reparaciones y Vacío/Chispa/Lanza. Tabla en filas 27+."""
-    patch.set_map({
-        "contrato":  "G3",
-        "proyecto":  "G4",
-        "area_cod":  "D6",
-        "plano":     "I6",
-        "protocolo": "Q6",
-        "fecha":     "X6",
-        "tag":       "B9",
-        "area_cod2": "D9",
-        "area_desc": "E9",
-        "sis_cod":   "G9",
-        "sis_desc":  "H9",
-        "sub_cod":   "J9",
-        "sub_desc":  "L9",
-        "pie":       "N9",
-        "aconex":    "U9",
-        "lugar":     "E11",
-        "espesor":   "C14",
-    }, proyecto)
-
-    tipo = (proyecto.get("tipo_prueba_rep") or "vacio").lower()
-    if tipo == "vacio":
-        patch.set("I12", "X"); patch.set("I14", "-")
-    elif tipo == "spark":
-        patch.set("I12", "-"); patch.set("I14", "X")
-
-    if equipo:
-        patch.set("G18", equipo.get("nombre"))
-        patch.set("H18", equipo.get("serie") or "S/I")
-        patch.set("J18", equipo.get("fecha_cal"))
-        patch.set("L18", equipo.get("certificado"))
-        patch.set("N18", equipo.get("etiqueta") or "-")
-
-    fila = 27
-    for i, r in enumerate(registros, 1):
-        patch.set(f"B{fila}", r.get("fecha"))
-        patch.set(f"C{fila}", r.get("hora"))
-        patch.set(f"D{fila}", i)
-        patch.set(f"E{fila}", r.get("tipo_rep"))
-        patch.set(f"F{fila}", r.get("union"))
-        patch.set(f"H{fila}", r.get("tecnico"))
-        patch.set(f"J{fila}", r.get("dim_largo"))
-        patch.set(f"K{fila}", r.get("dim_ancho"))
-        patch.set(f"L{fila}", r.get("maq"))
-        patch.set(f"M{fila}", r.get("tmaq"))
-        patch.set(f"N{fila}", r.get("tleister"))
-        patch.set(f"O{fila}", r.get("ds") or "-")
-        patch.set(f"Q{fila}", r.get("prueba") or "VA")
-        patch.set(f"S{fila}", "OK" if r.get("resultado") == "Aprobado" else "X")
-        patch.set(f"T{fila}", r.get("tipo_falla1") or "-")
-        patch.set(f"U{fila}", r.get("tipo_falla2") or "-")
-        patch.set(f"V{fila}", r.get("equipo") or "VAC-26")
-        patch.set(f"W{fila}", r.get("hora_fin"))
-        patch.set(f"X{fila}", r.get("fecha_fin"))
-        patch.set(f"Y{fila}", r.get("op_fin"))
-        fila += 1
-
-
-def generar_ri(patch, proyecto, registros):
-    """Instalación de Geomembranas. Tabla en filas 22+."""
-    patch.set_map({
-        "contrato":  "G4",
-        "proyecto":  "G5",
-        "area_cod":  "E7",
-        "plano":     "M7",
-        "protocolo": "U7",
-        "fecha":     "AB7",
-        "tag":       "B9",
-        "area_cod2": "E10",
-        "area_desc": "I10",
-        "sis_cod":   "L10",
-        "sis_desc":  "O10",
-        "sub_cod":   "R10",
-        "sub_desc":  "T10",
-        "pie":       "V10",
-        "aconex":    "AB10",
-        "lugar":     "F13",
-    }, proyecto)
-
-    fila = 22
-    for r in registros:
-        patch.set(f"B{fila}", r.get("fecha"))
-        patch.set(f"D{fila}", r.get("hora"))
-        clima = (r.get("clima") or "").lower()
-        patch.set(f"E{fila}", "x" if "nublado" in clima else "-")
-        pat
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
