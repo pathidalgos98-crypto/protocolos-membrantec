@@ -8,7 +8,7 @@ from datetime import datetime, time as dtime
 app = Flask(__name__)
 CORS(app)
 
-PLANTILLAS = os.path.join(os.path.dirname(__file__), 'Aplicación Membrantec')
+PLANTILLAS = os.path.join(os.path.dirname(__file__), 'plantillas')
 print(f'[membrantec] Plantillas en: {PLANTILLAS}')
 
 ARCHIVOS = {
