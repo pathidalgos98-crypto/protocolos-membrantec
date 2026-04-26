@@ -74,7 +74,13 @@ print(f"[membrantec] Plantillas en: {PLANTILLAS_DIR}")
 
 NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 ET.register_namespace('', NS)
-
+# Registrar prefijos OOXML para que Excel no los renombre a ns1/ns2/ns3
+ET.register_namespace('r',     'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
+ET.register_namespace('mc',    'http://schemas.openxmlformats.org/markup-compatibility/2006')
+ET.register_namespace('x14ac', 'http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac')
+ET.register_namespace('xr',    'http://schemas.microsoft.com/office/spreadsheetml/2014/revision')
+ET.register_namespace('xr2',   'http://schemas.microsoft.com/office/spreadsheetml/2015/revision2')
+ET.register_namespace('xr3',   'http://schemas.microsoft.com/office/spreadsheetml/2016/revision3')
 
 def _col_to_num(col):
     n = 0
