@@ -73,17 +73,7 @@ print(f"[membrantec] Plantillas en: {PLANTILLAS_DIR}")
 # ═══════════════════════════════════════════════════════════════════
 
 NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
-# IMPORTANTE: registrar TODOS los prefijos que usa Excel/OOXML, si no
-# ElementTree los renombra a ns0/ns1/ns2/ns3... y rompe las referencias
-# (en particular `r:id` se vuelve `ns3:id` y Excel deja de encontrar
-# el drawing del logo).
 ET.register_namespace('', NS)
-ET.register_namespace('r',     'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
-ET.register_namespace('mc',    'http://schemas.openxmlformats.org/markup-compatibility/2006')
-ET.register_namespace('x14ac', 'http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac')
-ET.register_namespace('xr',    'http://schemas.microsoft.com/office/spreadsheetml/2014/revision')
-ET.register_namespace('xr2',   'http://schemas.microsoft.com/office/spreadsheetml/2015/revision2')
-ET.register_namespace('xr3',   'http://schemas.microsoft.com/office/spreadsheetml/2016/revision3')
 
 
 def _col_to_num(col):
@@ -185,6 +175,32 @@ class XlsxPatcher:
                 cell_el = ET.SubElement(row_el, f'{{{NS}}}c')
                 cell_el.set('r', coord)
             _escribir_valor(cell_el, value)
+
+        # Reordenar para que Excel no muestre warning de "contenido no valido".
+        # Excel exige <row> en orden creciente por numero de fila, y dentro de
+        # cada fila <c> en orden creciente por columna. Como ET.SubElement los
+        # agrega al final, hay que reordenar antes de serializar.
+        rows_sorted = sorted(
+            sheetData.findall(f'{{{NS}}}row'),
+            key=lambda r: int(r.get('r'))
+        )
+        for r in list(sheetData):
+            sheetData.remove(r)
+        for r in rows_sorted:
+            cells_sorted = sorted(
+                r.findall(f'{{{NS}}}c'),
+                key=lambda c: _col_to_num(re.match(r'([A-Z]+)', c.get('r')).group(1))
+            )
+            for c in list(r):
+                r.remove(c)
+            for c in cells_sorted:
+                r.append(c)
+            if cells_sorted:
+                first_col = _col_to_num(re.match(r'([A-Z]+)', cells_sorted[0].get('r')).group(1))
+                last_col  = _col_to_num(re.match(r'([A-Z]+)', cells_sorted[-1].get('r')).group(1))
+                r.set('spans', f'{first_col}:{last_col}')
+            sheetData.append(r)
+
         new_xml = ET.tostring(root, encoding='utf-8', xml_declaration=True)
         tmp = dst_path + '.tmp'
         with zipfile.ZipFile(dst_path, 'r') as zin:
