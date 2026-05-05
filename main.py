@@ -1,4 +1,4 @@
-"""
+ """
 Servidor Flask para generar protocolos de calidad Membrantec Chile.
 
 Rellena las plantillas XLSX oficiales modificando SOLO el XML de la hoja
@@ -74,13 +74,15 @@ print(f"[membrantec] Plantillas en: {PLANTILLAS_DIR}")
 
 NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 ET.register_namespace('', NS)
-# Registrar prefijos OOXML para que Excel no los renombre a ns1/ns2/ns3
+# Registrar prefijos OOXML para que Excel no los renombre a ns1/ns2/ns3 y
+# rompa la referencia mc:Ignorable="x14ac xr xr2 xr3"
 ET.register_namespace('r',     'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
 ET.register_namespace('mc',    'http://schemas.openxmlformats.org/markup-compatibility/2006')
 ET.register_namespace('x14ac', 'http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac')
 ET.register_namespace('xr',    'http://schemas.microsoft.com/office/spreadsheetml/2014/revision')
 ET.register_namespace('xr2',   'http://schemas.microsoft.com/office/spreadsheetml/2015/revision2')
 ET.register_namespace('xr3',   'http://schemas.microsoft.com/office/spreadsheetml/2016/revision3')
+
 
 def _col_to_num(col):
     n = 0
@@ -564,10 +566,33 @@ def generar_protocolo():
 
     plantilla = os.path.join(PLANTILLAS_DIR, PLANTILLAS[tipo])
     if not os.path.isfile(plantilla):
-        return jsonify({
-            "error": "plantilla no encontrada: " + plantilla,
-            "plantillas_dir": PLANTILLAS_DIR,
-        }), 500
+        # Intentar variantes (con/sin sufijo _1, etc.)
+        base = PLANTILLAS[tipo]
+        candidatos = [
+            base,
+            base.replace("_1.xlsx", ".xlsx"),
+            base.replace(".xlsx", "_1.xlsx"),
+            base.replace("-RAI-001", "-RAI-001_1") if "_1" not in base else base.replace("_1", ""),
+        ]
+        encontrado = None
+        for c in candidatos:
+            ruta = os.path.join(PLANTILLAS_DIR, c)
+            if os.path.isfile(ruta):
+                encontrado = ruta
+                break
+        if encontrado:
+            plantilla = encontrado
+        else:
+            try:
+                disponibles = [f for f in os.listdir(PLANTILLAS_DIR) if f.endswith(".xlsx")]
+            except Exception:
+                disponibles = []
+            return jsonify({
+                "error": "plantilla no encontrada: " + base,
+                "plantillas_dir": PLANTILLAS_DIR,
+                "candidatos_probados": candidatos,
+                "disponibles": disponibles
+            }), 500
 
     proyecto = data.get("proyecto") or {}
     registros = data.get("registros") or []
