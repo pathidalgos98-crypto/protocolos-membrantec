@@ -201,6 +201,17 @@ class XlsxPatcher:
                 cell_el.set('r', coord)
             _escribir_valor(cell_el, value)
 
+        # Forzar recálculo de fórmulas al abrir: borrar el <v> cacheado de toda
+        # celda con <f>, así Excel no muestra el valor viejo. Sin esto, los
+        # totales (=SUM(...)) siguen mostrando lo de la plantilla original.
+        for row_el in sheetData.findall(f'{{{NS}}}row'):
+            for cell_el in row_el.findall(f'{{{NS}}}c'):
+                f_el = cell_el.find(f'{{{NS}}}f')
+                if f_el is not None:
+                    v_el = cell_el.find(f'{{{NS}}}v')
+                    if v_el is not None:
+                        cell_el.remove(v_el)
+
         # Reordenar para que Excel no muestre warning de "contenido no valido".
         # Excel exige <row> en orden creciente por numero de fila, y dentro de
         # cada fila <c> en orden creciente por columna. Como ET.SubElement los
@@ -231,7 +242,19 @@ class XlsxPatcher:
         with zipfile.ZipFile(dst_path, 'r') as zin:
             with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as zout:
                 for item in zin.infolist():
-                    data = new_xml if item.filename == self.sheet_xml_path else zin.read(item.filename)
+                    if item.filename == self.sheet_xml_path:
+                        data = new_xml
+                    elif item.filename == 'xl/workbook.xml':
+                        # Forzar recalculo completo al abrir
+                        wb = zin.read(item.filename).decode('utf-8')
+                        if '<calcPr' in wb:
+                            wb = re.sub(r'<calcPr([^/>]*)/>', r'<calcPr\1 fullCalcOnLoad="1" forceFullCalcOnLoad="1" calcOnSave="1"/>', wb, count=1)
+                            wb = re.sub(r'<calcPr([^>]*)>', r'<calcPr\1 fullCalcOnLoad="1" forceFullCalcOnLoad="1" calcOnSave="1">', wb, count=1) if 'fullCalcOnLoad' not in wb else wb
+                        else:
+                            wb = wb.replace('</workbook>', '<calcPr fullCalcOnLoad="1" forceFullCalcOnLoad="1" calcOnSave="1"/></workbook>')
+                        data = wb.encode('utf-8')
+                    else:
+                        data = zin.read(item.filename)
                     zout.writestr(item, data)
         os.replace(tmp, dst_path)
 
@@ -548,7 +571,7 @@ def index():
     return jsonify({
         "service": "Membrantec - Generador de Protocolos",
         "status": "ok",
-        "version": "3.1",
+        "version": "3.2",
         "plantillas_dir": PLANTILLAS_DIR,
         "endpoints": ["GET /health", "POST /generar-protocolo"],
         "tipos": list(PLANTILLAS.keys()),
